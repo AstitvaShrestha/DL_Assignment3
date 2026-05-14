@@ -3,6 +3,7 @@ from collections import Counter
 
 import torch
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 
 from datasets import load_dataset
 import spacy
@@ -200,3 +201,29 @@ class Multi30kDataset(Dataset):
             (src_tensor, tgt_tensor)
         """
         return self.examples[idx]
+    
+
+def collate_fn(batch):
+    """
+    Pads source and target sequences within a batch.
+
+    Args:
+        batch:
+            list of tuples:
+            [(src_tensor, tgt_tensor), ...]
+
+    Returns:
+        src_batch : [batch_size, src_len]
+        tgt_batch : [batch_size, tgt_len]
+    """
+    
+    # Separate source and target sequences
+    src_batch = [item[0] for item in batch]
+    tgt_batch = [item[1] for item in batch]
+
+    # Pad sequences
+    # padding_value=1 corresponds to <pad>
+    src_batch = pad_sequence(src_batch, batch_first=True, padding_value=1)
+    tgt_batch = pad_sequence(tgt_batch, batch_first=True, padding_value=1)
+
+    return src_batch, tgt_batch
