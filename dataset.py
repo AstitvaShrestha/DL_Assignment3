@@ -1,4 +1,14 @@
-class Multi30kDataset:
+import pickle
+from collections import Counter
+
+import torch
+from torch.utils.data import Dataset
+
+from datasets import load_dataset
+import spacy
+
+
+class Multi30kDataset(Dataset):
     def __init__(self, split='train'):
         """
         Loads the Multi30k dataset and prepares tokenizers.
@@ -7,7 +17,29 @@ class Multi30kDataset:
         # Load dataset from Hugging Face
         # https://huggingface.co/datasets/bentrevett/multi30k
         # TODO: Load dataset, load spacy tokenizers for de and en
-        pass
+        
+        # --Internal config----
+        self.max_len = 100  # Max sentence length for padding/truncation
+        self.min_freq = 2  # Minimum frequency for a word to be included in the vocab
+
+        # --- Special tokens----
+        self.UNK_TOKEN = "<unk>"
+        self.PAD_TOKEN = "<pad>"
+        self.SOS_TOKEN = "<sos>"
+        self.EOS_TOKEN = "<eos>"
+
+        # Load dataset
+        self.dataset = load_dataset("multi30k")
+        self.data = self.dataset[split]
+        
+        #--- Load spacy tokenizers for German and English
+        self.de_tokenizer = spacy.load("de_core_news_sm")
+        self.en_tokenizer = spacy.load("en_core_web_sm")
+
+        if split == "train":
+            self.build_vocab()
+
+        self.process_data()
 
     def build_vocab(self):
         """
