@@ -909,3 +909,71 @@ class Transformer(nn.Module):
         translated_sentence = " ".join(filtered_tokens)
 
         return translated_sentence
+    
+
+# #   MAIN TEST BLOCK (for quick dummy testing)
+# if __name__ == "__main__":
+#     import torch
+#     import os
+#     # Dummy vocab files for test (if not present, create minimal ones)
+#     if not os.path.exists("src_vocab.pkl"):
+#         import pickle
+#         src_vocab = {"<sos>":0, "<pad>":1, "<eos>":2, "<unk>":3, "hallo":4}
+#         src_itos = ["<sos>", "<pad>", "<eos>", "<unk>", "hallo"]
+#         with open("src_vocab.pkl", "wb") as f:
+#             pickle.dump((src_vocab, src_itos), f)
+#     if not os.path.exists("tgt_vocab.pkl"):
+#         import pickle
+#         tgt_vocab = {"<sos>":0, "<pad>":1, "<eos>":2, "<unk>":3, "hello":4}
+#         tgt_itos = ["<sos>", "<pad>", "<eos>", "<unk>", "hello"]
+#         with open("tgt_vocab.pkl", "wb") as f:
+#             pickle.dump((tgt_vocab, tgt_itos), f)
+
+#     # Make sure spacy models are available
+#     try:
+#         import spacy
+#         spacy.load("de_core_news_sm")
+#     except Exception:
+#         os.system("python -m spacy download de_core_news_sm")
+#     try:
+#         spacy.load("en_core_web_sm")
+#     except Exception:
+#         os.system("python -m spacy download en_core_web_sm")
+
+#     # Model params
+#     src_vocab_size = 5
+#     tgt_vocab_size = 5
+#     d_model = 8
+#     N = 2
+#     num_heads = 2
+#     d_ff = 16
+#     dropout = 0.1
+
+#     # Instantiate model
+#     model = Transformer(
+#         src_vocab_size=src_vocab_size,
+#         tgt_vocab_size=tgt_vocab_size,
+#         d_model=d_model,
+#         N=N,
+#         num_heads=num_heads,
+#         d_ff=d_ff,
+#         dropout=dropout
+#     )
+
+#     # Dummy input tensors
+#     batch = 2
+#     src_len = 4
+#     tgt_len = 4
+#     src = torch.randint(0, src_vocab_size, (batch, src_len))
+#     tgt = torch.randint(0, tgt_vocab_size, (batch, tgt_len))
+#     src_mask = make_src_mask(src, pad_idx=1)
+#     tgt_mask = make_tgt_mask(tgt, pad_idx=1)
+
+#     # Forward pass
+#     out = model(src, tgt, src_mask, tgt_mask)
+#     print("Output shape:", out.shape)
+#     # Test inference with a dummy sentence
+#     try:
+#         print("Inference output:", model.infer("hallo"))
+#     except Exception as e:
+#         print("Inference failed:", e)

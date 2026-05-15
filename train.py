@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from typing import Optional
 
 from model import Transformer, make_src_mask, make_tgt_mask
+from nltk.translate.bleu_score import corpus_bleu
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -42,7 +43,14 @@ class LabelSmoothingLoss(nn.Module):
 
     def __init__(self, vocab_size: int, pad_idx: int, smoothing: float = 0.1) -> None:
         super().__init__()
-        raise NotImplementedError
+
+        self.vocab_size = vocab_size
+
+        self.pad_idx = pad_idx
+
+        self.smoothing = smoothing
+
+        self.confidence = 1.0 - smoothing
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
@@ -54,7 +62,55 @@ class LabelSmoothingLoss(nn.Module):
             Scalar loss value.
         """
         # TODO: Task 3.1
-        raise NotImplementedError
+
+        # Log probabilities
+        log_probs = torch.log_softmax(
+            logits,
+            dim=-1
+        )
+
+
+        # Create smoothed target distribution
+        with torch.no_grad():
+
+            true_dist = torch.zeros_like(log_probs)
+
+            true_dist.fill_(
+                self.smoothing / (self.vocab_size - 2)
+            )
+
+
+            # Assign confidence to correct class
+            true_dist.scatter_(
+                1,
+                target.unsqueeze(1),
+                self.confidence
+            )
+
+
+            # Zero out PAD token probability
+            true_dist[:, self.pad_idx] = 0
+
+
+            # Ignore PAD positions entirely
+            pad_mask = (target == self.pad_idx)
+
+            true_dist[pad_mask] = 0
+
+
+        # KL-divergence style loss
+        loss = torch.sum(
+            -true_dist * log_probs,
+            dim=1
+        )
+
+
+        # Ignore PAD tokens in averaging
+        non_pad_mask = (target != self.pad_idx)
+
+        loss = loss.masked_select(non_pad_mask)
+
+        return loss.mean()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -88,7 +144,114 @@ def run_epoch(
         avg_loss : Average loss over the epoch (float).
 
     """
-    raise NotImplementedError
+
+    # ------------------------------------------------
+    # Set train/eval mode
+    # ------------------------------------------------
+    if is_train:
+        model.train()
+    else:
+        model.eval()
+
+    total_loss = 0.0
+
+    # ------------------------------------------------
+    # Iterate over batches
+    # ------------------------------------------------
+    for batch_idx, (src, tgt) in enumerate(data_iter):
+
+        # ------------------------------------------------
+        # Move tensors to device
+        # ------------------------------------------------
+        src = src.to(device)
+
+        tgt = tgt.to(device)
+
+        # ------------------------------------------------
+        # Teacher forcing shift
+        # ------------------------------------------------
+        tgt_input = tgt[:, :-1]
+
+        tgt_output = tgt[:, 1:]
+
+        # ------------------------------------------------
+        # Create masks
+        # ------------------------------------------------
+        src_mask = make_src_mask(
+            src
+        ).to(device)
+
+        tgt_mask = make_tgt_mask(
+            tgt_input
+        ).to(device)
+
+        # ------------------------------------------------
+        # Forward pass
+        # ------------------------------------------------
+        logits = model(
+            src,
+            tgt_input,
+            src_mask,
+            tgt_mask
+        )
+
+        # ------------------------------------------------
+        # Reshape for loss
+        #
+        # logits:
+        # [batch, tgt_len, vocab]
+        #
+        # target:
+        # [batch, tgt_len]
+        # ------------------------------------------------
+        logits = logits.reshape(
+            -1,
+            logits.shape[-1]
+        )
+
+        tgt_output = tgt_output.reshape(-1)
+
+        # ------------------------------------------------
+        # Compute loss
+        # ------------------------------------------------
+        loss = loss_fn(
+            logits,
+            tgt_output
+        )
+
+        # ------------------------------------------------
+        # Backpropagation
+        # ------------------------------------------------
+        if is_train:
+
+            optimizer.zero_grad()
+
+            loss.backward()
+
+            # ------------------------------------------------
+            # Gradient clipping
+            # ------------------------------------------------
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=1.0
+            )
+
+            optimizer.step()
+
+            # ------------------------------------------------
+            # Noam scheduler step
+            # ------------------------------------------------
+            if scheduler is not None:
+                scheduler.step()
+
+        total_loss += loss.item()
+
+    # ------------------------------------------------
+    # Average epoch loss
+    # ------------------------------------------------
+    avg_loss = total_loss / len(data_iter)
+
+    return avg_loss
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -123,7 +286,90 @@ def greedy_decode(
 
     """
     # TODO: Task 3.3 — implement token-by-token greedy decoding
-    raise NotImplementedError
+    """
+    Greedy autoregressive decoding.
+    """
+
+    model.eval()
+
+    src = src.to(device)
+
+    src_mask = src_mask.to(device)
+
+    # ------------------------------------------------
+    # Encode source sentence
+    # ------------------------------------------------
+    with torch.no_grad():
+
+        memory = model.encode(
+            src,
+            src_mask
+        )
+
+    # ------------------------------------------------
+    # Initialize decoder input with <sos>
+    # ------------------------------------------------
+    ys = torch.ones(
+        1,
+        1,
+        dtype=torch.long
+    ).fill_(start_symbol).to(device)
+
+    # ------------------------------------------------
+    # Autoregressive decoding loop
+    # ------------------------------------------------
+    for _ in range(max_len - 1):
+
+        # ------------------------------------------------
+        # Target mask
+        # ------------------------------------------------
+        tgt_mask = make_tgt_mask(
+            ys
+        ).to(device)
+
+        with torch.no_grad():
+
+            out = model.decode(
+                memory,
+                src_mask,
+                ys,
+                tgt_mask
+            )
+
+        # ------------------------------------------------
+        # Last token logits
+        # ------------------------------------------------
+        prob = out[:, -1, :]
+
+        # ------------------------------------------------
+        # Greedy token selection
+        # ------------------------------------------------
+        next_word = torch.argmax(
+            prob,
+            dim=-1
+        ).item()
+
+        # ------------------------------------------------
+        # Append generated token
+        # ------------------------------------------------
+        next_word_tensor = torch.ones(
+            1,
+            1,
+            dtype=torch.long
+        ).fill_(next_word).to(device)
+
+        ys = torch.cat(
+            [ys, next_word_tensor],
+            dim=1
+        )
+
+        # ------------------------------------------------
+        # Stop at EOS
+        # ------------------------------------------------
+        if next_word == end_symbol:
+            break
+
+    return ys
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -155,7 +401,110 @@ def evaluate_bleu(
 
     """
     # TODO: Task 3 — loop test set, decode, compute and return BLEU
-    raise NotImplementedError
+    
+    model.eval()
+
+    references = []
+
+    hypotheses = []
+
+    sos_idx = model.tgt_vocab["<sos>"]
+
+    eos_idx = model.tgt_vocab["<eos>"]
+
+    pad_idx = model.pad_idx
+
+    with torch.no_grad():
+
+        for src_batch, tgt_batch in test_dataloader:
+
+            src_batch = src_batch.to(device)
+
+            tgt_batch = tgt_batch.to(device)
+
+            batch_size = src_batch.size(0)
+
+            # ------------------------------------------------
+            # Decode each sentence individually
+            # ------------------------------------------------
+            for i in range(batch_size):
+
+                src = src_batch[i].unsqueeze(0)
+
+                tgt = tgt_batch[i]
+
+                # ------------------------------------------------
+                # Source mask
+                # ------------------------------------------------
+                src_mask = make_src_mask(
+                    src,
+                    pad_idx
+                ).to(device)
+
+                # ------------------------------------------------
+                # Greedy decode
+                # ------------------------------------------------
+                pred_tokens = greedy_decode(
+                    model,
+                    src,
+                    src_mask,
+                    max_len,
+                    sos_idx,
+                    eos_idx,
+                    device
+                )
+
+                pred_tokens = pred_tokens.squeeze(0).tolist()
+
+                tgt_tokens = tgt.tolist()
+
+                # ------------------------------------------------
+                # Convert prediction indices → tokens
+                # ------------------------------------------------
+                pred_sentence = []
+
+                for idx in pred_tokens:
+
+                    token = model.tgt_itos[idx]
+
+                    if token in ["<sos>", "<eos>", "<pad>"]:
+                        continue
+
+                    pred_sentence.append(token)
+
+                # ------------------------------------------------
+                # Convert target indices → tokens
+                # ------------------------------------------------
+                target_sentence = []
+
+                for idx in tgt_tokens:
+
+                    token = model.tgt_itos[idx]
+
+                    if token in ["<sos>", "<eos>", "<pad>"]:
+                        continue
+
+                    target_sentence.append(token)
+
+                # ------------------------------------------------
+                # BLEU formatting
+                # ------------------------------------------------
+                hypotheses.append(pred_sentence)
+
+                references.append([target_sentence])
+
+    # ------------------------------------------------
+    # Compute corpus BLEU
+    # ------------------------------------------------
+    bleu = corpus_bleu(
+        references,
+        hypotheses
+    )
+
+    # ------------------------------------------------
+    # Convert to percentage
+    # ------------------------------------------------
+    return bleu * 100
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -193,7 +542,66 @@ def save_checkpoint(
          'd_ff': ..., 'dropout': ...}
     """
     # TODO: implement using torch.save({...}, path)
-    raise NotImplementedError
+    
+    checkpoint = {
+
+        # ------------------------------------------------
+        # Current epoch
+        # ------------------------------------------------
+        "epoch": epoch,
+
+        # ------------------------------------------------
+        # Model weights
+        # ------------------------------------------------
+        "model_state_dict":
+            model.state_dict(),
+
+        # ------------------------------------------------
+        # Optimizer state
+        # ------------------------------------------------
+        "optimizer_state_dict":
+            optimizer.state_dict(),
+
+        # ------------------------------------------------
+        # Scheduler state
+        # ------------------------------------------------
+        "scheduler_state_dict":
+            scheduler.state_dict()
+            if scheduler is not None
+            else None,
+
+        # ------------------------------------------------
+        # Model reconstruction config
+        # ------------------------------------------------
+        "model_config": {
+
+            "src_vocab_size":
+                len(model.src_vocab),
+
+            "tgt_vocab_size":
+                len(model.tgt_vocab),
+
+            "d_model":
+                model.d_model,
+
+            "N":
+                len(model.encoder.layers),
+
+            "num_heads":
+                model.encoder.layers[0]
+                .self_attn.num_heads,
+
+            "d_ff":
+                model.encoder.layers[0]
+                .ffn.linear1.out_features,
+
+            "dropout":
+                model.encoder.layers[0]
+                .dropout.p,
+        }
+    }
+
+    torch.save(checkpoint, path)
 
 
 def load_checkpoint(
@@ -216,7 +624,44 @@ def load_checkpoint(
 
     """
     # TODO: implement restore logic
-    raise NotImplementedError
+
+    checkpoint = torch.load(
+        path,
+        map_location="cpu"
+    )
+
+    # ------------------------------------------------
+    # Restore model weights
+    # ------------------------------------------------
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
+
+    # ------------------------------------------------
+    # Restore optimizer
+    # ------------------------------------------------
+    if optimizer is not None:
+
+        optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"]
+        )
+
+    # ------------------------------------------------
+    # Restore scheduler
+    # ------------------------------------------------
+    if (
+        scheduler is not None and
+        checkpoint["scheduler_state_dict"] is not None
+    ):
+
+        scheduler.load_state_dict(
+            checkpoint["scheduler_state_dict"]
+        )
+
+    # ------------------------------------------------
+    # Return saved epoch
+    # ------------------------------------------------
+    return checkpoint["epoch"]
 
 
 # ══════════════════════════════════════════════════════════════════════
