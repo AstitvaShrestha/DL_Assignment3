@@ -17,9 +17,11 @@ AUTOGRADER CONTRACT (DO NOT MODIFY SIGNATURES):
 import math
 import copy
 import os
+import pickle
 import gdown
 from typing import Optional, Tuple
 
+import spacy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -581,9 +583,118 @@ class Transformer(nn.Module):
         super().__init__()
         # TODO: Instantiate 
         # init should also load the model weights if checkpoint path provided, download the .pth file like this
+        
+        # ------------------------------------------------
+        # Optional checkpoint download
+        # ------------------------------------------------
+        # if checkpoint_path is not None:
+
+        #     gdown.download(
+        #         id="<.pth drive id>",
+        #         output=checkpoint_path,
+        #         quiet=False
+        #     )
+
+        # ------------------------------------------------
+        # Internal constants
+        # ------------------------------------------------
+        self.d_model = d_model
+
+        self.pad_idx = 1
+
+        self.max_seq_length = 5000
+
+        # ------------------------------------------------
+        # Load vocabularies
+        # ------------------------------------------------
+        with open("src_vocab.pkl", "rb") as f:
+            self.src_vocab, self.src_itos = pickle.load(f)
+
+        with open("tgt_vocab.pkl", "rb") as f:
+            self.tgt_vocab, self.tgt_itos = pickle.load(f)
+
+        # ------------------------------------------------
+        # Load spaCy tokenizers
+        # ------------------------------------------------
+        self.de_tokenizer = spacy.load("de_core_news_sm")
+
+        self.en_tokenizer = spacy.load("en_core_web_sm")
+
+        # ------------------------------------------------
+        # Embedding layers
+        # ------------------------------------------------
+        self.src_embedding = nn.Embedding(
+            src_vocab_size,
+            d_model,
+            padding_idx=self.pad_idx
+        )
+
+        self.tgt_embedding = nn.Embedding(
+            tgt_vocab_size,
+            d_model,
+            padding_idx=self.pad_idx
+        )
+
+        # ------------------------------------------------
+        # Positional encoding
+        # ------------------------------------------------
+        self.positional_encoding = PositionalEncoding(
+            d_model,
+            dropout,
+            self.max_seq_length
+        )
+
+        # ------------------------------------------------
+        # Encoder
+        # ------------------------------------------------
+        encoder_layer = EncoderLayer(
+            d_model,
+            num_heads,
+            d_ff,
+            dropout
+        )
+
+        self.encoder = Encoder(
+            encoder_layer,
+            N
+        )
+
+        # ------------------------------------------------
+        # Decoder
+        # ------------------------------------------------
+        decoder_layer = DecoderLayer(
+            d_model,
+            num_heads,
+            d_ff,
+            dropout
+        )
+
+        self.decoder = Decoder(
+            decoder_layer,
+            N
+        )
+
+        # ------------------------------------------------
+        # Final vocabulary projection
+        # ------------------------------------------------
+        self.fc_out = nn.Linear(
+            d_model,
+            tgt_vocab_size
+        )
+
+        # ------------------------------------------------
+        # Load checkpoint weights if provided
+        # ------------------------------------------------
         if checkpoint_path is not None:
-            gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
-        raise NotImplementedError
+
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location="cpu"
+            )
+
+            self.load_state_dict(
+                checkpoint["model_state_dict"]
+            )
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────
 
@@ -603,7 +714,21 @@ class Transformer(nn.Module):
             memory : Encoder output, shape [batch, src_len, d_model]
         """
     
-        raise NotImplementedError
+        # Source embeddings
+        src = self.src_embedding(src)
+
+        src = src * math.sqrt(self.d_model)
+
+        src = self.positional_encoding(src)
+
+        # Encoder forward
+        memory = self.encoder(
+            src,
+            src_mask
+        )
+
+        return memory
+    
 
     def decode(
         self,
@@ -624,7 +749,27 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+
+        # Target embeddings
+        tgt = self.tgt_embedding(tgt)
+
+        tgt = tgt * math.sqrt(self.d_model)
+
+        tgt = self.positional_encoding(tgt)
+
+
+        # Decoder forward
+        decoder_output = self.decoder(
+            tgt,
+            memory,
+            src_mask,
+            tgt_mask
+        )
+        
+        # Vocabulary projection
+        logits = self.fc_out(decoder_output)
+
+        return logits
 
     def forward(
         self,
@@ -645,7 +790,21 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+        # Encoder
+        memory = self.encode(
+            src,
+            src_mask
+        )
+
+        # Decoder
+        logits = self.decode(
+            memory,
+            src_mask,
+            tgt,
+            tgt_mask
+        )
+
+        return logits
 
 
     def infer(self, src_sentence: str) -> str:
@@ -659,4 +818,94 @@ class Transformer(nn.Module):
         Returns:
             The fully translated English string, detokenized and clean.
         """
-        raise NotImplementedError
+        
+        self.eval()  # Set model to evaluation mode
+
+        device = next(self.parameters()).device  # Get model device
+
+        # Tokenize German sentence
+        tokens = [
+            token.text.lower()
+            for token in self.de_tokenizer(src_sentence)
+        ]
+
+        # Add <sos> and <eos>
+        tokens = ["<sos>"] + tokens + ["<eos>"]
+
+        # Numercalize
+        src_indices = [
+            self.src_vocab.get(token, self.src_vocab["<unk>"])
+            for token in tokens
+        ]
+
+        # Create source tensor: [1, src_len]
+        src_tensor = torch.tensor(src_indices, dtype=torch.long).unsqueeze(0).to(device)
+
+        # Source mask
+        src_mask = make_src_mask(src_tensor, self.pad_idx).to(device)
+
+        # Encode source sentence
+        with torch.no_grad():
+            memory = self.encode(src_tensor, src_mask)
+
+        
+        # Initialize decoder input
+        tgt_indices = [self.tgt_vocab["<sos>"]]
+        max_decode_len = 100  # Prevent infinite loops
+
+        # Autoregressive decoding loop
+        for _ in range(max_decode_len):
+            tgt_tensor = torch.tensor(
+                tgt_indices,
+                dtype=torch.long
+            ).unsqueeze(0).to(device)
+
+            tgt_mask = make_tgt_mask(
+                tgt_tensor,
+                self.pad_idx
+            ).to(device)
+
+            with torch.no_grad():
+
+                output = self.decode(
+                    memory,
+                    src_mask,
+                    tgt_tensor,
+                    tgt_mask
+                )
+
+            # Last token prediction
+            next_token_logits = output[:, -1, :]
+
+            next_token = torch.argmax(
+                next_token_logits,
+                dim=-1
+            ).item()
+
+            tgt_indices.append(next_token)
+
+            # Stop at EOS
+            if next_token == self.tgt_vocab["<eos>"]:
+                break
+
+
+        # Convert indices back to tokens
+        tgt_tokens = [
+            self.tgt_itos[idx]
+            for idx in tgt_indices
+        ]
+
+        # Remove special tokens
+        filtered_tokens = []
+
+        for token in tgt_tokens:
+
+            if token in ["<sos>", "<eos>", "<pad>"]:
+                continue
+
+            filtered_tokens.append(token)
+
+        # Detokenize 
+        translated_sentence = " ".join(filtered_tokens)
+
+        return translated_sentence
