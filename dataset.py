@@ -1,3 +1,4 @@
+import os
 import pickle
 from collections import Counter
 
@@ -7,6 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from datasets import load_dataset
 import spacy
+from tqdm import tqdm
 
 
 class Multi30kDataset(Dataset):
@@ -30,19 +32,35 @@ class Multi30kDataset(Dataset):
         self.EOS_TOKEN = "<eos>"
 
         # Load dataset
-        self.dataset = load_dataset("multi30k")
+        print("Loading dataset...")
+        self.dataset = load_dataset("bentrevett/multi30k", split=None)
         self.data = self.dataset[split]
         
         #--- Load spacy tokenizers for German and English
-        self.de_tokenizer = spacy.load("de_core_news_sm")
-        self.en_tokenizer = spacy.load("en_core_web_sm")
+        self.de_tokenizer = spacy.load("de_core_news_sm",
+                                disable=["parser", "tagger", "ner"]
+                            )
+        
+        self.en_tokenizer = spacy.load("en_core_web_sm",
+                                        disable=["parser", "tagger", "ner"]
+                                    )
 
         # Build vocab
-        if split == "train":
-            self.build_vocab()
+        # if split == "train":
+        #     self.build_vocab()
         
-        else:
+        # else:
+        #     self.load_vocab()
+        if (os.path.exists("src_vocab.pkl")
+            and
+            os.path.exists("tgt_vocab.pkl")
+        ):
             self.load_vocab()
+
+        else:
+            print("Building vocabulary...")
+            self.build_vocab()
+            
 
         self.examples = [] # List to hold processed examples (token indices)
         self.process_data() # Process data to convert sentences to token indices
@@ -71,7 +89,7 @@ class Multi30kDataset(Dataset):
         tgt_counter = Counter()
 
         # Iterate through the TRAIN split to build vocab
-        for sample in self.dataset['train']:
+        for sample in tqdm(self.dataset['train'], desc="Building vocab"):
             
             src_text = sample['de']
             tgt_text = sample['en']
@@ -127,6 +145,9 @@ class Multi30kDataset(Dataset):
         with open('tgt_vocab.pkl', 'wb') as f:  
             pickle.dump((self.tgt_vocab, self.tgt_itos), f)
 
+        print(f"Source vocab size: {len(self.src_vocab)}")
+        print(f"Target vocab size: {len(self.tgt_vocab)}")
+
     def load_vocab(self):
         """
         Loads previously saved vocabularies.
@@ -138,6 +159,9 @@ class Multi30kDataset(Dataset):
         with open('tgt_vocab.pkl', 'rb') as f:
             self.tgt_vocab, self.tgt_itos = pickle.load(f)
 
+        print(f"Source vocab size: {len(self.src_vocab)}")
+        print(f"Target vocab size: {len(self.tgt_vocab)}")
+
     def process_data(self):
         """
         Convert English and German sentences into integer token lists using
@@ -145,7 +169,7 @@ class Multi30kDataset(Dataset):
         """
         # TODO: Tokenize and convert words to indices
         
-        for sample in self.data:
+        for sample in tqdm(self.data, desc=f"Processing {self.split}"):
 
             # Get raw text
             src_text = sample['de']

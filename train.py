@@ -23,6 +23,14 @@ from typing import Optional
 from model import Transformer, make_src_mask, make_tgt_mask
 from nltk.translate.bleu_score import corpus_bleu
 
+import wandb
+
+from dataset import Multi30kDataset, collate_fn
+
+from lr_scheduler import NoamScheduler
+import argparse
+import random
+import numpy as np
 
 # ══════════════════════════════════════════════════════════════════════
 #  LABEL SMOOTHING LOSS  
@@ -668,6 +676,23 @@ def load_checkpoint(
 #   EXPERIMENT ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
 
+def parse_args():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--d_model", type=int, default=256)
+    parser.add_argument("--N", type=int, default=4)
+    parser.add_argument("--num_heads", type=int, default=4)
+    parser.add_argument("--d_ff", type=int, default=1024)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--learning_rate", type=float, default=1.0)
+    parser.add_argument("--warmup_steps", type=int, default=4000)
+    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    
+    return parser.parse_args()
+
 def run_training_experiment() -> None:
     """
     Set up and run the full training experiment.
@@ -692,7 +717,204 @@ def run_training_experiment() -> None:
                wandb.log({'test_bleu': bleu})
     """
     # TODO: implement full experiment
-    raise NotImplementedError
+
+    # Parse command-line arguments
+    args = parse_args()
+
+    # Reproducibility
+    seed = 42
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Initialize W&B
+    wandb.init(
+        project="da6401-assignment3",
+        entity="da25s013-iitm",
+        config=vars(args)
+    )
+
+    device = args.device
+
+    print(f"Using device: {device}")
+
+    # Datasets
+    train_dataset = Multi30kDataset(
+        split="train"
+    )
+
+    val_dataset = Multi30kDataset(
+        split="validation"
+    )
+
+    test_dataset = Multi30kDataset(
+        split="test"
+    )
+
+    # DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    # Model
+    model = Transformer(
+        src_vocab_size=len(train_dataset.src_vocab),
+        tgt_vocab_size=len(train_dataset.tgt_vocab),
+        d_model=args.d_model,
+        N=args.N,
+        num_heads=args.num_heads,
+        d_ff=args.d_ff,
+        dropout=args.dropout,
+    ).to(device)
+
+
+    # Optimizer
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.learning_rate,
+        betas=(0.9, 0.98),
+        eps=1e-9
+    )
+
+
+    # Noam Scheduler
+    scheduler = NoamScheduler(
+        optimizer,
+        d_model=args.d_model,
+        warmup_steps=args.warmup_steps
+    )
+
+    # Loss function
+    loss_fn = LabelSmoothingLoss(
+        vocab_size=len(train_dataset.tgt_vocab),
+        pad_idx=1,
+        smoothing=0.1
+    )
+
+    best_val_loss = float("inf")
+
+    # Training loop
+    for epoch in range(args.num_epochs):
+
+
+        # Train epoch
+        train_loss = run_epoch(
+            data_iter=train_loader,
+            model=model,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch_num=epoch,
+            is_train=True,
+            device=device,
+        )
+
+        # Validation epoch
+        val_loss = run_epoch(
+            data_iter=val_loader,
+            model=model,
+            loss_fn=loss_fn,
+            optimizer=None,
+            scheduler=None,
+            epoch_num=epoch,
+            is_train=False,
+            device=device,
+        )
+
+        val_bleu = evaluate_bleu(
+            model=model,
+            test_dataloader=val_loader,
+            tgt_vocab=train_dataset.tgt_vocab,
+            device=device,
+        )
+
+        print(
+            f"Epoch {epoch+1}/{args.num_epochs} | "
+            f"Train Loss: {train_loss:.4f} | "
+            f"Val Loss: {val_loss:.4f} | "
+            f"Val BLEU: {val_bleu:.2f}"
+        )
+
+        # ------------------------------------------------
+        # Log metrics to W&B
+        # ------------------------------------------------
+        wandb.log({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_bleu": val_bleu,
+            "learning_rate":
+                optimizer.param_groups[0]["lr"],
+        })
+
+
+        # Save best checkpoint
+        if val_loss < best_val_loss:
+
+            best_val_loss = val_loss
+
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                path="best_model.pth",
+            )
+
+            print("Saved best checkpoint.")
+
+
+    # Load best model before BLEU evaluation
+    load_checkpoint(
+        path="best_model.pth",
+        model=model
+    )
+
+    # ------------------------------------------------
+    # Final BLEU evaluation
+    # ------------------------------------------------
+    bleu = evaluate_bleu(
+        model=model,
+        test_dataloader=test_loader,
+        tgt_vocab=train_dataset.tgt_vocab,
+        device=device,
+    )
+
+    print(f"\nTest BLEU: {bleu:.2f}")
+
+    wandb.log({
+        "test_bleu": bleu
+    })
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

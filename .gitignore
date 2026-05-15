@@ -1,2 +1,6 @@
 /venv
 /pip_tmp
+/__pycache__
+*.pkl
+*.pth
+/wandb
