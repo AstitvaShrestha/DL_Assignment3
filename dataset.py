@@ -37,13 +37,17 @@ class Multi30kDataset(Dataset):
         self.data = self.dataset[split]
         
         #--- Load spacy tokenizers for German and English
-        self.de_tokenizer = spacy.load("de_core_news_sm",
-                                disable=["parser", "tagger", "ner"]
-                            )
+        # self.de_tokenizer = spacy.load("de_core_news_sm",
+        #                         disable=["parser", "tagger", "ner"]
+        #                     )
         
-        self.en_tokenizer = spacy.load("en_core_web_sm",
-                                        disable=["parser", "tagger", "ner"]
-                                    )
+        # self.en_tokenizer = spacy.load("en_core_web_sm",
+        #                                 disable=["parser", "tagger", "ner"]
+        #                             )
+        self.de_tokenizer = spacy.blank("de")
+
+        self.en_tokenizer = spacy.blank("en")
+
 
         # Build vocab
         # if split == "train":

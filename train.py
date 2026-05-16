@@ -681,15 +681,20 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--d_model", type=int, default=256)
-    parser.add_argument("--N", type=int, default=4)
-    parser.add_argument("--num_heads", type=int, default=4)
-    parser.add_argument("--d_ff", type=int, default=1024)
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--N", type=int, default=6)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--d_ff", type=int, default=2048)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--learning_rate", type=float, default=1.0)
     parser.add_argument("--warmup_steps", type=int, default=4000)
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+
+    parser.add_argument("--no_noam", dest="use_noam", action="store_false")
+    parser.set_defaults(use_noam=True)
+    
+    parser.add_argument("--fixed_lr", type=float, default=1e-4, help="Fixed learning rate when not using Noam scheduler.")
     
     return parser.parse_args()
 
@@ -795,22 +800,32 @@ def run_training_experiment() -> None:
         dropout=args.dropout,
     ).to(device)
 
+    if args.use_noam:
+        # Optimizer
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(0.9, 0.98),
+            eps=1e-9
+        )
 
-    # Optimizer
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.learning_rate,
-        betas=(0.9, 0.98),
-        eps=1e-9
-    )
 
+        # Noam Scheduler
+        scheduler = NoamScheduler(
+            optimizer,
+            d_model=args.d_model,
+            warmup_steps=args.warmup_steps
+        )
 
-    # Noam Scheduler
-    scheduler = NoamScheduler(
-        optimizer,
-        d_model=args.d_model,
-        warmup_steps=args.warmup_steps
-    )
+    else:
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=args.fixed_lr,   # e.g. 1e-4
+            betas=(0.9, 0.98),
+            eps=1e-9
+        )
+
+        scheduler = None  # run_epoch already handles scheduler=None gracefully
 
     # Loss function
     loss_fn = LabelSmoothingLoss(
@@ -819,7 +834,8 @@ def run_training_experiment() -> None:
         smoothing=0.1
     )
 
-    best_val_loss = float("inf")
+    # best_val_loss = float("inf")
+    best_val_bleu = 0.0
 
     # Training loop
     for epoch in range(args.num_epochs):
@@ -877,9 +893,12 @@ def run_training_experiment() -> None:
 
 
         # Save best checkpoint
-        if val_loss < best_val_loss:
+        if val_bleu > best_val_bleu:
 
-            best_val_loss = val_loss
+            best_val_bleu = val_bleu
+        # if val_loss < best_val_loss:
+
+        #     best_val_loss = val_loss
 
             save_checkpoint(
                 model=model,
