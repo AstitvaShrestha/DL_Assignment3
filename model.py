@@ -571,12 +571,12 @@ class Transformer(nn.Module):
 
     def __init__(
         self,
-        src_vocab_size: int,
-        tgt_vocab_size: int,
-        d_model:   int   = 512,
-        N:         int   = 6,
-        num_heads: int   = 8,
-        d_ff:      int   = 2048,
+        src_vocab_size: int = None,
+        tgt_vocab_size: int = None,
+        d_model:   int   = 256,
+        N:         int   = 4,
+        num_heads: int   = 4,
+        d_ff:      int   = 1024,
         dropout:   float = 0.1,
         checkpoint_path: str = None,
     ) -> None:
@@ -613,12 +613,22 @@ class Transformer(nn.Module):
         with open("tgt_vocab.pkl", "rb") as f:
             self.tgt_vocab, self.tgt_itos = pickle.load(f)
 
+        if src_vocab_size is None:
+            src_vocab_size = len(self.src_vocab)
+
+        if tgt_vocab_size is None:
+            tgt_vocab_size = len(self.tgt_vocab)
+
         # ------------------------------------------------
         # Load spaCy tokenizers
         # ------------------------------------------------
-        self.de_tokenizer = spacy.load("de_core_news_sm")
+        self.de_tokenizer = spacy.load("de_core_news_sm",  
+                                        disable=["parser", "tagger", "ner"]
+                                    )
 
-        self.en_tokenizer = spacy.load("en_core_web_sm")
+        self.en_tokenizer = spacy.load("en_core_web_sm",
+                                         disable=["parser", "tagger", "ner"]
+                                    )
 
         # ------------------------------------------------
         # Embedding layers
