@@ -867,7 +867,7 @@ def run_training_experiment() -> None:
         # Log metrics to W&B
         # ------------------------------------------------
         wandb.log({
-            "epoch": epoch,
+            "epoch": epoch+1,
             "train_loss": train_loss,
             "val_loss": val_loss,
             "val_bleu": val_bleu,

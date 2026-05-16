@@ -138,7 +138,7 @@ def make_tgt_mask(
     # Upper triangular part becomes True
     # Shape: [tgt_len, tgt_len]
     causal_mask = torch.triu(
-        torch.ones((tgt_len, tgt_len), dtype=torch.bool),
+        torch.ones((tgt_len, tgt_len), dtype=torch.bool, device=tgt.device),
         diagonal=1
     )
 
