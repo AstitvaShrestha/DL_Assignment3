@@ -1,7 +1,8 @@
 /venv
 /pip_tmp
 /__pycache__
-*.pkl
 *.pth
 /wandb
 *.png
+visualize_attention.py
+*.html

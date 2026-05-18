@@ -134,6 +134,8 @@ def run_epoch(
     epoch_num: int = 0,
     is_train: bool = True,
     device: str = "cpu",
+    global_step=0,         
+    log_grad_steps=1000,    # <-- log only first 1000 steps
 ) -> float:
     """
     Run one epoch of training or evaluation.
@@ -219,6 +221,7 @@ def run_epoch(
 
         tgt_output = tgt_output.reshape(-1)
 
+        
         # ------------------------------------------------
         # Compute loss
         # ------------------------------------------------
@@ -244,6 +247,28 @@ def run_epoch(
                 max_norm=1.0
             )
 
+            # # ── Gradient norm logging ──────────────────────
+            # if global_step < log_grad_steps:
+            #     q_norms, k_norms = [], []
+
+            #     for name, param in model.named_parameters():
+            #         if param.grad is None:
+            #             continue
+            #         if "W_q" in name and "weight" in name:
+            #             q_norms.append(param.grad.norm().item())
+            #         if "W_k" in name and "weight" in name:
+            #             k_norms.append(param.grad.norm().item())
+
+            #     if q_norms and k_norms:
+            #         wandb.log({
+            #             "grad_norm/Q_mean": sum(q_norms) / len(q_norms),
+            #             "grad_norm/K_mean": sum(k_norms) / len(k_norms),
+            #             "grad_norm/Q_max":  max(q_norms),
+            #             "grad_norm/K_max":  max(k_norms),
+            #             "step": global_step,
+            #         })
+            # # ───────────────────────────────────────────────
+
             optimizer.step()
 
             # ------------------------------------------------
@@ -253,13 +278,14 @@ def run_epoch(
                 scheduler.step()
 
         total_loss += loss.item()
+        global_step += 1   
 
     # ------------------------------------------------
     # Average epoch loss
     # ------------------------------------------------
     avg_loss = total_loss / len(data_iter)
 
-    return avg_loss
+    return avg_loss, global_step
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -671,6 +697,43 @@ def load_checkpoint(
     # ------------------------------------------------
     return checkpoint["epoch"]
 
+def compute_confidence(model, data_iter, device):
+    """
+    Compute average softmax probability assigned to correct token
+    across the validation set.
+    """
+    model.eval()
+    total_confidence = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for src, tgt in data_iter:
+            src = src.to(device)
+            tgt = tgt.to(device)
+
+            tgt_input  = tgt[:, :-1]
+            tgt_output = tgt[:, 1:]
+
+            src_mask = make_src_mask(src).to(device)
+            tgt_mask = make_tgt_mask(tgt_input).to(device)
+
+            logits = model(src, tgt_input, src_mask, tgt_mask)
+            logits = logits.reshape(-1, logits.shape[-1])
+            tgt_output = tgt_output.reshape(-1)
+
+            probs = torch.softmax(logits, dim=-1)
+
+            correct_probs = probs.gather(
+                1, tgt_output.unsqueeze(1)
+            ).squeeze(1)
+
+            non_pad_mask = (tgt_output != 1)
+            correct_probs = correct_probs[non_pad_mask]
+
+            total_confidence += correct_probs.sum().item()
+            total_tokens += non_pad_mask.sum().item()
+
+    return total_confidence / total_tokens if total_tokens > 0 else 0.0
 
 # ══════════════════════════════════════════════════════════════════════
 #   EXPERIMENT ENTRY POINT
@@ -695,6 +758,14 @@ def parse_args():
     parser.set_defaults(use_noam=True)
     
     parser.add_argument("--fixed_lr", type=float, default=1e-4, help="Fixed learning rate when not using Noam scheduler.")
+    
+    parser.add_argument("--no_scale", action="store_true", help="Disable attention scaling")
+
+    parser.add_argument("--learned_pe", action="store_true", help="Use learned positional embeddings instead of sinusoidal")
+    
+    parser.add_argument("--smoothing", type=float, default=0.1, help="Label smoothing factor (0.0 = standard cross entropy)")
+    
+    parser.add_argument("--run_name", type=str, default=None, help="W&B run name")
     
     return parser.parse_args()
 
@@ -738,6 +809,7 @@ def run_training_experiment() -> None:
     wandb.init(
         project="da6401-assignment3",
         entity="da25s013-iitm",
+        name=args.run_name, 
         config=vars(args)
     )
 
@@ -789,6 +861,8 @@ def run_training_experiment() -> None:
         persistent_workers=True
     )
 
+    use_scale = not args.no_scale
+
     # Model
     model = Transformer(
         src_vocab_size=len(train_dataset.src_vocab),
@@ -798,6 +872,8 @@ def run_training_experiment() -> None:
         num_heads=args.num_heads,
         d_ff=args.d_ff,
         dropout=args.dropout,
+        use_scale=use_scale,
+        learned_pe=args.learned_pe
     ).to(device)
 
     if args.use_noam:
@@ -831,18 +907,19 @@ def run_training_experiment() -> None:
     loss_fn = LabelSmoothingLoss(
         vocab_size=len(train_dataset.tgt_vocab),
         pad_idx=1,
-        smoothing=0.1
+        smoothing=args.smoothing
     )
 
     # best_val_loss = float("inf")
     best_val_bleu = 0.0
 
+    global_step = 0
     # Training loop
     for epoch in range(args.num_epochs):
 
 
         # Train epoch
-        train_loss = run_epoch(
+        train_loss, global_step = run_epoch(
             data_iter=train_loader,
             model=model,
             loss_fn=loss_fn,
@@ -851,10 +928,12 @@ def run_training_experiment() -> None:
             epoch_num=epoch,
             is_train=True,
             device=device,
+            global_step=global_step,
+            log_grad_steps=1000,
         )
 
         # Validation epoch
-        val_loss = run_epoch(
+        val_loss, _ = run_epoch(
             data_iter=val_loader,
             model=model,
             loss_fn=loss_fn,
@@ -863,6 +942,8 @@ def run_training_experiment() -> None:
             epoch_num=epoch,
             is_train=False,
             device=device,
+            global_step=global_step,
+            log_grad_steps=1000,
         )
 
         val_bleu = evaluate_bleu(
@@ -871,7 +952,13 @@ def run_training_experiment() -> None:
             tgt_vocab=train_dataset.tgt_vocab,
             device=device,
         )
+        
+        # Compute confidence on val set
+        confidence = compute_confidence(
+            model, val_loader, device
+        )
 
+        
         print(
             f"Epoch {epoch+1}/{args.num_epochs} | "
             f"Train Loss: {train_loss:.4f} | "
@@ -887,10 +974,10 @@ def run_training_experiment() -> None:
             "train_loss": train_loss,
             "val_loss": val_loss,
             "val_bleu": val_bleu,
+            "pred_confidence": confidence,
             "learning_rate":
                 optimizer.param_groups[0]["lr"],
         })
-
 
         # Save best checkpoint
         if val_bleu > best_val_bleu:

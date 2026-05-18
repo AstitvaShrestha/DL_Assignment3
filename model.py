@@ -195,6 +195,7 @@ class MultiHeadAttention(nn.Module):
         key:   torch.Tensor,
         value: torch.Tensor,
         mask:  Optional[torch.Tensor] = None,
+        return_weights=False
     ) -> torch.Tensor:
         """
         Args:
@@ -227,8 +228,15 @@ class MultiHeadAttention(nn.Module):
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
 
+        if hasattr(self, 'use_scale') and not self.use_scale:
+            Q_input = Q * math.sqrt(self.d_k)  # cancel out the division
+        else:
+            Q_input = Q
+        
         # Apply scaled dot-product attention
-        attention_output, attention_weights = scaled_dot_product_attention(Q, K, V, mask)
+        attention_output, attention_weights = scaled_dot_product_attention(Q_input, K, V, mask)
+
+        # attention_output, attention_weights = scaled_dot_product_attention(Q, K, V, mask)
 
 
         # Concatenate heads
@@ -239,6 +247,9 @@ class MultiHeadAttention(nn.Module):
 
         # Output projection
         output = self.W_o(attention_output)
+
+        if return_weights:
+            return output, attention_weights  # [batch, heads, seq_q, seq_k]
 
         return output
 
@@ -297,6 +308,19 @@ class PositionalEncoding(nn.Module):
         
         return self.dropout(x)
 
+class LearnedPositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        # Learned embedding instead of fixed sinusoidal
+        self.pos_embedding = nn.Embedding(max_len, d_model)
+    
+    def forward(self, x):
+        # x: [batch, seq_len, d_model]
+        seq_len = x.size(1)
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        x = x + self.pos_embedding(positions)
+        return self.dropout(x)
 
 # ══════════════════════════════════════════════════════════════════════
 #  FEED-FORWARD NETWORK 
@@ -374,7 +398,7 @@ class EncoderLayer(nn.Module):
         
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, x: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, src_mask: torch.Tensor, return_weights=False) -> torch.Tensor:
         """
         Args:
             x        : shape [batch, src_len, d_model]
@@ -386,10 +410,18 @@ class EncoderLayer(nn.Module):
         """
         
         # Self-attention sublayer
-        attn_output = self.self_attn(x, x, x, src_mask)
+        if return_weights:
+            self_attn_output, attn_weights = self.self_attn(
+                x, x, x, src_mask, return_weights=True
+            )
+
+        else:
+            self_attn_output = self.self_attn(x, x, x, src_mask)
+        
+        # attn_output = self.self_attn(x, x, x, src_mask)
 
         # Residual + LayerNorm
-        x = self.norm1(x + self.dropout(attn_output))
+        x = self.norm1(x + self.dropout(self_attn_output))
 
         # Feed-forward sublayer
         ffn_output = self.ffn(x)
@@ -397,6 +429,9 @@ class EncoderLayer(nn.Module):
         # Residual + LayerNorm
         x = self.norm2(x + self.dropout(ffn_output))
 
+        if return_weights:
+            return x, attn_weights
+    
         return x
 
 
@@ -495,7 +530,7 @@ class Encoder(nn.Module):
         self.norm = nn.LayerNorm(layer.self_attn.d_model)
 
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, return_last_weights=False) -> torch.Tensor:
         """
         Args:
             x    : shape [batch, src_len, d_model]
@@ -505,8 +540,19 @@ class Encoder(nn.Module):
         """
         
         # Pass through all encoder layers
-        for layer in self.layers:
-            x = layer(x, mask)
+        # for layer in self.layers:
+        #     x = layer(x, mask)
+
+        for i, layer in enumerate(self.layers):
+            is_last = (i == len(self.layers) - 1)
+            
+            if return_last_weights and is_last:
+                x, attn_weights = layer(x, mask, return_weights=True)
+            else:
+                x = layer(x, mask)
+        
+        if return_last_weights:
+            return x, attn_weights
 
         # Final normalization
         return self.norm(x)
@@ -579,6 +625,8 @@ class Transformer(nn.Module):
         d_ff:      int   = 2048,
         dropout:   float = 0.1,
         checkpoint_path: str = None,
+        use_scale=True,
+        learned_pe=False
     ) -> None:
         super().__init__()
         # TODO: Instantiate 
@@ -652,11 +700,19 @@ class Transformer(nn.Module):
         # ------------------------------------------------
         # Positional encoding
         # ------------------------------------------------
-        self.positional_encoding = PositionalEncoding(
-            d_model,
-            dropout,
-            self.max_seq_length
-        )
+        if learned_pe:
+            self.positional_encoding = LearnedPositionalEncoding(
+                d_model, dropout, self.max_seq_length
+            )
+        else:
+            self.positional_encoding = PositionalEncoding(
+                d_model, dropout, self.max_seq_length
+            )
+        # self.positional_encoding = PositionalEncoding(
+        #     d_model,
+        #     dropout,
+        #     self.max_seq_length
+        # )
 
         # ------------------------------------------------
         # Encoder
@@ -688,6 +744,11 @@ class Transformer(nn.Module):
             N
         )
 
+        if not use_scale:
+            for module in self.modules():
+                if isinstance(module, MultiHeadAttention):
+                    module.use_scale = False
+
         # ------------------------------------------------
         # Final vocabulary projection
         # ------------------------------------------------
@@ -696,6 +757,8 @@ class Transformer(nn.Module):
             tgt_vocab_size
         )
 
+        # Tie target embedding and output projection weights
+        self.tgt_embedding.weight = self.fc_out.weight
         # ------------------------------------------------
         # Load checkpoint weights if provided
         # ------------------------------------------------
@@ -703,7 +766,7 @@ class Transformer(nn.Module):
 
             checkpoint = torch.load(
                 checkpoint_path,
-                map_location="cpu"
+                map_location="cuda" if torch.cuda.is_available() else "cpu"
             )
 
             self.load_state_dict(
@@ -716,6 +779,7 @@ class Transformer(nn.Module):
         self,
         src:      torch.Tensor,
         src_mask: torch.Tensor,
+        return_last_weights=False
     ) -> torch.Tensor:
         """
         Run the full encoder stack.
@@ -735,6 +799,12 @@ class Transformer(nn.Module):
 
         src = self.positional_encoding(src)
 
+        if return_last_weights:
+            memory, attn_weights = self.encoder(
+                src, src_mask, return_last_weights=True
+            )
+            return memory, attn_weights
+        
         # Encoder forward
         memory = self.encoder(
             src,
@@ -858,71 +928,96 @@ class Transformer(nn.Module):
         # Source mask
         src_mask = make_src_mask(src_tensor, self.pad_idx).to(device)
 
-        # Encode source sentence
-        with torch.no_grad():
-            memory = self.encode(src_tensor, src_mask)
+        # # Encode source sentence
+        # with torch.no_grad():
+        #     memory = self.encode(src_tensor, src_mask)
 
         
-        # Initialize decoder input
-        tgt_indices = [self.tgt_vocab["<sos>"]]
-        max_decode_len = 100  # Prevent infinite loops
+        # # Initialize decoder input
+        # tgt_indices = [self.tgt_vocab["<sos>"]]
+        # max_decode_len = 100  # Prevent infinite loops
 
-        # Autoregressive decoding loop
-        for _ in range(max_decode_len):
-            tgt_tensor = torch.tensor(
-                tgt_indices,
-                dtype=torch.long
-            ).unsqueeze(0).to(device)
+        # # Autoregressive decoding loop
+        # for _ in range(max_decode_len):
+        #     tgt_tensor = torch.tensor(
+        #         tgt_indices,
+        #         dtype=torch.long
+        #     ).unsqueeze(0).to(device)
 
-            tgt_mask = make_tgt_mask(
-                tgt_tensor,
-                self.pad_idx
-            ).to(device)
+        #     tgt_mask = make_tgt_mask(
+        #         tgt_tensor,
+        #         self.pad_idx
+        #     ).to(device)
 
-            with torch.no_grad():
+        #     with torch.no_grad():
 
-                output = self.decode(
-                    memory,
-                    src_mask,
-                    tgt_tensor,
-                    tgt_mask
-                )
+        #         output = self.decode(
+        #             memory,
+        #             src_mask,
+        #             tgt_tensor,
+        #             tgt_mask
+        #         )
 
-            # Last token prediction
-            next_token_logits = output[:, -1, :]
+        #     # Last token prediction
+        #     next_token_logits = output[:, -1, :]
 
-            next_token = torch.argmax(
-                next_token_logits,
-                dim=-1
-            ).item()
+        #     next_token = torch.argmax(
+        #         next_token_logits,
+        #         dim=-1
+        #     ).item()
 
-            tgt_indices.append(next_token)
+        #     tgt_indices.append(next_token)
 
-            # Stop at EOS
-            if next_token == self.tgt_vocab["<eos>"]:
-                break
+        #     # Stop at EOS
+        #     if next_token == self.tgt_vocab["<eos>"]:
+        #         break
 
 
-        # Convert indices back to tokens
-        tgt_tokens = [
-            self.tgt_itos[idx]
-            for idx in tgt_indices
-        ]
+        # # Convert indices back to tokens
+        # tgt_tokens = [
+        #     self.tgt_itos[idx]
+        #     for idx in tgt_indices
+        # ]
 
-        # Remove special tokens
+        
+        # # Remove special tokens
+        # filtered_tokens = []
+
+        # for token in tgt_tokens:
+
+        #     if token in ["<sos>", "<eos>", "<pad>"]:
+        #         continue
+
+        #     filtered_tokens.append(token)
+
+        # # Detokenize 
+        # translated_sentence = " ".join(filtered_tokens)
+
+        # return translated_sentence
+
+
+        # Import and use greedy_decode from train.py
+        from train import greedy_decode
+
+        decoded = greedy_decode(
+            model=self,
+            src=src_tensor,
+            src_mask=src_mask,
+            max_len=120,
+            start_symbol=self.tgt_vocab["<sos>"],
+            end_symbol=self.tgt_vocab["<eos>"],
+            device=device,
+        )
+
+        # Convert indices to tokens
         filtered_tokens = []
-
-        for token in tgt_tokens:
-
+        for idx in decoded.squeeze(0).tolist():
+            token = self.tgt_itos[idx]
             if token in ["<sos>", "<eos>", "<pad>"]:
                 continue
-
             filtered_tokens.append(token)
 
-        # Detokenize 
-        translated_sentence = " ".join(filtered_tokens)
-
-        return translated_sentence
+        return " ".join(filtered_tokens)
     
 
 # #   MAIN TEST BLOCK (for quick dummy testing)
