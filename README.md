@@ -114,6 +114,35 @@ python train.py \
 
 ---
 
+# Training Configuration
+
+Best performing configuration:
+
+| Hyperparameter | Value |
+|---|---|
+| d_model | 512 |
+| Encoder/Decoder Layers (N) | 6 |
+| Attention Heads | 8 |
+| FFN Dimension | 2048 |
+| Dropout | 0.2 |
+| Warmup Steps | 4000 |
+| Batch Size | 64 |
+| Epochs | 25 |
+
+---
+
+# BLEU Score
+
+Final performance:
+
+| Metric | Score |
+|---|---|
+| Validation BLEU (Peak) | 32.83 |
+| Test BLEU | 31.9 |
+
+Evaluation performed using corpus-level BLEU score.
+
+---
 
 # Positional Encoding
 
