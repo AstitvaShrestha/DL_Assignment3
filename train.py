@@ -247,7 +247,7 @@ def run_epoch(
                 max_norm=1.0
             )
 
-            # # ── Gradient norm logging ──────────────────────
+            # ── Gradient norm logging ──────────────────────
             # if global_step < log_grad_steps:
             #     q_norms, k_norms = [], []
 
@@ -267,7 +267,7 @@ def run_epoch(
             #             "grad_norm/K_max":  max(k_norms),
             #             "step": global_step,
             #         })
-            # # ───────────────────────────────────────────────
+            # ───────────────────────────────────────────────
 
             optimizer.step()
 
