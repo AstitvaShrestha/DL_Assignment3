@@ -1003,7 +1003,7 @@ class Transformer(nn.Module):
             model=self,
             src=src_tensor,
             src_mask=src_mask,
-            max_len=120,
+            max_len=100,
             start_symbol=self.tgt_vocab["<sos>"],
             end_symbol=self.tgt_vocab["<eos>"],
             device=device,

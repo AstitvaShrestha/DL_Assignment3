@@ -247,27 +247,27 @@ def run_epoch(
                 max_norm=1.0
             )
 
-            # # ── Gradient norm logging ──────────────────────
-            # if global_step < log_grad_steps:
-            #     q_norms, k_norms = [], []
+            # ── Gradient norm logging ──────────────────────
+            if global_step < log_grad_steps:
+                q_norms, k_norms = [], []
 
-            #     for name, param in model.named_parameters():
-            #         if param.grad is None:
-            #             continue
-            #         if "W_q" in name and "weight" in name:
-            #             q_norms.append(param.grad.norm().item())
-            #         if "W_k" in name and "weight" in name:
-            #             k_norms.append(param.grad.norm().item())
+                for name, param in model.named_parameters():
+                    if param.grad is None:
+                        continue
+                    if "W_q" in name and "weight" in name:
+                        q_norms.append(param.grad.norm().item())
+                    if "W_k" in name and "weight" in name:
+                        k_norms.append(param.grad.norm().item())
 
-            #     if q_norms and k_norms:
-            #         wandb.log({
-            #             "grad_norm/Q_mean": sum(q_norms) / len(q_norms),
-            #             "grad_norm/K_mean": sum(k_norms) / len(k_norms),
-            #             "grad_norm/Q_max":  max(q_norms),
-            #             "grad_norm/K_max":  max(k_norms),
-            #             "step": global_step,
-            #         })
-            # # ───────────────────────────────────────────────
+                if q_norms and k_norms:
+                    wandb.log({
+                        "grad_norm/Q_mean": sum(q_norms) / len(q_norms),
+                        "grad_norm/K_mean": sum(k_norms) / len(k_norms),
+                        "grad_norm/Q_max":  max(q_norms),
+                        "grad_norm/K_max":  max(k_norms),
+                        "step": global_step,
+                    })
+            # ───────────────────────────────────────────────
 
             optimizer.step()
 

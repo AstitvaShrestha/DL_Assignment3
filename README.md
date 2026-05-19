@@ -4,6 +4,10 @@
 
 In this assignment, you will implement the landmark architecture from the paper "Attention Is All You Need" from scratch using PyTorch. The goal is to develop a Neural Machine Translation (NMT) system capable of translating text from German to English using the Multi30k dataset.
 
+**Github Link**:- https://github.com/AstitvaShrestha/DL_Assignment3/  
+**WandB Link**:- https://api.wandb.ai/links/da25s013-iitm/uyfz3rnj  
+
+
 ---
 
 # Features
@@ -99,11 +103,11 @@ Example configuration:
 
 ```bash
 python train.py \
-    --d_model 256 \
-    --N 4 \
-    --num_heads 4 \
-    --d_ff 1024 \
-    --dropout 0.1 \
+    --d_model 512 \
+    --N 6 \
+    --num_heads 8 \
+    --d_ff 2048 \
+    --dropout 0.2 \
     --batch_size 64 \
     --num_epochs 20
 ```
@@ -116,11 +120,11 @@ Best performing configuration:
 
 | Hyperparameter | Value |
 |---|---|
-| d_model | 256 |
-| Encoder/Decoder Layers (N) | 4 |
-| Attention Heads | 4 |
-| FFN Dimension | 1024 |
-| Dropout | 0.1 |
+| d_model | 512 |
+| Encoder/Decoder Layers (N) | 6 |
+| Attention Heads | 8 |
+| FFN Dimension | 2048 |
+| Dropout | 0.2 |
 | Warmup Steps | 4000 |
 | Batch Size | 64 |
 | Epochs | 20 |
@@ -133,8 +137,8 @@ Final performance:
 
 | Metric | Score |
 |---|---|
-| Validation BLEU | ~32.83 |
-| Test BLEU | ~30.5 |
+| Validation BLEU (Peak) | 32.83 |
+| Test BLEU | 31.9 |
 
 Evaluation performed using corpus-level BLEU score.
 
@@ -172,21 +176,6 @@ print(translation)
 
 ---
 
-# Weights & Biases
-
-Project link:
-
-https://wandb.ai/da25s013-iitm/da6401-assignment3
-
-Tracked metrics:
-- Training Loss
-- Validation Loss
-- Validation BLEU
-- Learning Rate
-- Test BLEU
-
----
-
 # Tokenization
 
 Tokenization implemented using:
@@ -207,18 +196,5 @@ This avoids external spaCy model downloads and ensures portability in Gradescope
 - Attention masking implemented manually.
 - Layer normalization implemented using `nn.LayerNorm`.
 - Greedy decoding implemented manually.
-
----
-
-# References
-
-- Attention Is All You Need  
-  https://arxiv.org/abs/1706.03762
-
-- Multi30k Dataset  
-  https://huggingface.co/datasets/bentrevett/multi30k
-
-- Assignment Skeleton  
-  https://github.com/MiRL-IITM/da6401_assignment_3
 
 ---
