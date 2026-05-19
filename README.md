@@ -109,7 +109,7 @@ python train.py \
     --d_ff 2048 \
     --dropout 0.2 \
     --batch_size 64 \
-    --num_epochs 20
+    --num_epochs 25
 ```
 
 ---
